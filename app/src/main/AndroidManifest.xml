@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+
+    <application
+        android:label="Vitrina"
+        android:icon="@drawable/ic_launcher"
+        android:theme="@style/Theme.Vitrina">
+
+        <!-- Pantalla de configuración: permisos, URL del WMS, prueba en vivo -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Modo idle propio: pantalla completa, siempre encendida -->
+        <activity
+            android:name=".IdleActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:excludeFromRecents="true" />
+
+        <!-- Tile en ajustes rápidos para encender Vitrina desde la cortina -->
+        <service
+            android:name=".VitrinaTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile"
+            android:label="Vitrina"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- El screensaver: el sistema lo enlaza al conectar el cargador -->
+        <service
+            android:name=".VitrinaDreamService"
+            android:exported="true"
+            android:permission="android.permission.BIND_DREAM_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.dreams.DreamService" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.dream"
+                android:resource="@xml/dream_info" />
+        </service>
+    </application>
+</manifest>

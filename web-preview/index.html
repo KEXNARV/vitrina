@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vitrina — cielo y nubes</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: -apple-system, system-ui, sans-serif; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+
+  #panel {
+    position: fixed; top: 14px; left: 14px; z-index: 10;
+    background: rgba(10, 12, 18, 0.55);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    padding: 14px 16px;
+    color: #eaeaf0;
+    width: 240px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+  }
+  #panel h1 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.6; margin: 0 0 10px; font-weight: 600; }
+  .row { margin-bottom: 12px; }
+  .row:last-child { margin-bottom: 0; }
+  .row label { display: flex; justify-content: space-between; font-size: 12.5px; margin-bottom: 4px; opacity: 0.9; }
+  .row label span.val { opacity: 0.55; font-variant-numeric: tabular-nums; }
+  input[type=range] {
+    width: 100%; accent-color: #7fb8ff; height: 4px;
+  }
+  #fps { position: fixed; bottom: 10px; right: 12px; color: rgba(255,255,255,0.35); font-size: 11px; font-variant-numeric: tabular-nums; z-index: 10; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="panel">
+  <h1>Cielo &amp; nubes</h1>
+  <div class="row">
+    <label>Hora del día <span class="val" id="v-sun">12:00</span></label>
+    <input type="range" id="sun" min="-15" max="105" value="55" />
+  </div>
+  <div class="row">
+    <label>Cobertura <span class="val" id="v-cov">45%</span></label>
+    <input type="range" id="cov" min="0" max="100" value="45" />
+  </div>
+  <div class="row">
+    <label>Densidad <span class="val" id="v-den">70%</span></label>
+    <input type="range" id="den" min="0" max="100" value="70" />
+  </div>
+  <div class="row">
+    <label>Escala <span class="val" id="v-scale">100%</span></label>
+    <input type="range" id="scale" min="30" max="220" value="100" />
+  </div>
+  <div class="row">
+    <label>Viento <span class="val" id="v-wind">100%</span></label>
+    <input type="range" id="wind" min="0" max="300" value="100" />
+  </div>
+</div>
+<div id="fps">--- fps</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.165.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+
+const canvas = document.getElementById("c");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+
+const scene = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+const uniforms = {
+  uTime:       { value: 0 },
+  uResolution: { value: new THREE.Vector2(1, 1) },
+  uSunHeight:  { value: 0.55 },   // -0.15..1.05  (bajo horizonte -> sobre el cenit)
+  uCoverage:   { value: 0.45 },
+  uDensity:    { value: 0.70 },
+  uScale:      { value: 1.0 },
+  uWind:       { value: 1.0 },
+};
+
+const vertexShader = `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+  }
+`;
+
+// Raymarch de nubes volumétricas sobre una cúpula de cielo con dispersión simple.
+const fragmentShader = `
+precision highp float;
+varying vec2 vUv;
+
+uniform float uTime;
+uniform vec2  uResolution;
+uniform float uSunHeight;
+uniform float uCoverage;
+uniform float uDensity;
+uniform float uScale;
+uniform float uWind;
+
+// ---------- ruido ----------
+float hash(vec3 p) {
+  p = fract(p * 0.3183099 + 0.1);
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float noise(vec3 x) {
+  vec3 i = floor(x);
+  vec3 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(mix(hash(i + vec3(0,0,0)), hash(i + vec3(1,0,0)), f.x),
+        mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+    mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+        mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y),
+    f.z);
+}
+
+float fbm(vec3 p) {
+  float f = 0.0;
+  float amp = 0.5;
+  for (int i = 0; i < 4; i++) {
+    f += amp * noise(p);
+    p *= 2.02;
+    amp *= 0.5;
+  }
+  return f;
+}
+
+float fbmDetail(vec3 p) {
+  float f = 0.0;
+  float amp = 0.5;
+  for (int i = 0; i < 2; i++) {
+    f += amp * noise(p);
+    p *= 2.3;
+    amp *= 0.5;
+  }
+  return f;
+}
+
+// ---------- geometría de la capa de nubes ----------
+const float CLOUD_BASE = 1200.0;
+const float CLOUD_TOP  = 2200.0;
+
+float densityAt(vec3 p, vec3 wind) {
+  float h = (p.y - CLOUD_BASE) / (CLOUD_TOP - CLOUD_BASE);
+  if (h < 0.0 || h > 1.0) return 0.0;
+
+  vec3 q = p * (0.0016 / uScale) + wind;
+  float shape = fbm(q);
+
+  // borde más denso a media altura, se deshilacha arriba y abajo
+  float heightGrad = smoothstep(0.0, 0.15, h) * smoothstep(1.0, 0.55, h);
+
+  float cov = mix(-0.55, 0.35, uCoverage); // más cobertura -> umbral más bajo
+  float d = smoothstep(cov, cov + 0.35, shape) * heightGrad;
+
+  // erosión de detalle para bordes fibrosos
+  float detail = fbmDetail(q * 4.2 + wind * 1.7);
+  d -= detail * 0.15 * smoothstep(0.0, 0.5, d);
+
+  return clamp(d, 0.0, 1.0) * uDensity * 1.4;
+}
+
+vec3 sunDirection() {
+  float a = clamp(uSunHeight, -0.15, 1.05);
+  float ang = mix(-0.18, 3.14159 + 0.18, a) - 1.5708; // recorre el cielo de horizonte a horizonte
+  return normalize(vec3(cos(ang) * 0.35, sin(ang), -0.9));
+}
+
+vec3 skyColor(vec3 rd, vec3 sunDir) {
+  float sunUp = clamp(sunDir.y, -1.0, 1.0);
+  float t = clamp(rd.y * 0.5 + 0.5, 0.0, 1.0);
+
+  vec3 dayZenith  = vec3(0.20, 0.45, 0.85);
+  vec3 dayHorizon = vec3(0.72, 0.82, 0.92);
+  vec3 duskZenith  = vec3(0.06, 0.07, 0.18);
+  vec3 duskHorizon = vec3(0.85, 0.45, 0.28);
+  vec3 nightZenith = vec3(0.008, 0.012, 0.03);
+  vec3 nightHorizon= vec3(0.03, 0.035, 0.06);
+
+  float dayMix  = smoothstep(-0.05, 0.25, sunUp);
+  float duskMix = 1.0 - smoothstep(0.0, 0.35, abs(sunUp));
+
+  vec3 zenith  = mix(nightZenith, dayZenith, dayMix);
+  vec3 horizon = mix(nightHorizon, dayHorizon, dayMix);
+  zenith  = mix(zenith,  duskZenith,  duskMix * (1.0 - dayMix * 0.4));
+  horizon = mix(horizon, duskHorizon, duskMix);
+
+  vec3 col = mix(horizon, zenith, pow(t, 0.5));
+
+  // resplandor solar
+  float sunDot = max(dot(rd, sunDir), 0.0);
+  vec3 sunGlowColor = mix(vec3(1.0, 0.55, 0.25), vec3(1.0, 0.97, 0.85), dayMix);
+  col += sunGlowColor * pow(sunDot, 400.0) * 2.0;
+  col += sunGlowColor * pow(sunDot, 16.0) * 0.08 * (0.3 + dayMix);
+
+  // estrellas de noche
+  float night = 1.0 - dayMix;
+  if (rd.y > 0.0 && night > 0.05) {
+    vec3 sp = rd * 400.0;
+    float star = pow(hash(floor(sp)), 60.0);
+    col += vec3(star) * night * 0.8;
+  }
+
+  // suelo provisional (todavía no hay capa de terreno) para dar contraste al horizonte
+  vec3 groundColor = mix(vec3(0.045, 0.05, 0.055), vec3(0.14, 0.15, 0.17), dayMix);
+  col = mix(col, groundColor, smoothstep(0.02, -0.12, rd.y));
+
+  return col;
+}
+
+void main() {
+  vec2 uv = (vUv * 2.0 - 1.0);
+  uv.x *= uResolution.x / uResolution.y;
+
+  vec3 ro = vec3(0.0, 180.0, 0.0);
+  float fov = 1.15;
+  vec3 forward = normalize(vec3(0.0, 0.08, -1.0));
+  vec3 right = normalize(cross(forward, vec3(0.0,1.0,0.0)));
+  vec3 up = cross(right, forward);
+  vec3 rd = normalize(forward + uv.x * fov * right + uv.y * fov * up);
+
+  vec3 sunDir = sunDirection();
+  vec3 col = skyColor(rd, sunDir);
+
+  if (rd.y > 0.005) {
+    vec3 wind = vec3(uTime * 0.02 * uWind, 0.0, uTime * 0.013 * uWind);
+
+    float tBase = (CLOUD_BASE - ro.y) / rd.y;
+    float tTop  = (CLOUD_TOP  - ro.y) / rd.y;
+    float t0 = max(tBase, 0.0);
+    // en ángulos casi horizontales t1 se dispara a decenas de miles de unidades;
+    // sin este tope, cada paso cubre tanta distancia que la nube satura de golpe (se ve como bloque blanco)
+    const float MAX_MARCH = 3500.0;
+    float t1 = min(tTop, t0 + MAX_MARCH);
+
+    const int STEPS = 32;
+    float dt = (t1 - t0) / float(STEPS);
+    float t = t0 + dt * hash(vec3(gl_FragCoord.xy, uTime)); // jitter, quita el banding
+
+    float trans = 1.0;
+    vec3 cloudCol = vec3(0.0);
+
+    for (int i = 0; i < STEPS; i++) {
+      if (trans < 0.02) break;
+      vec3 p = ro + rd * t;
+      float d = densityAt(p, wind);
+
+      if (d > 0.001) {
+        // luz hacia el sol, con auto-sombreado barato (2 muestras)
+        float dl = 0.0;
+        vec3 lp = p;
+        for (int j = 0; j < 2; j++) {
+          lp += sunDir * 80.0;
+          dl += densityAt(lp, wind);
+        }
+        float lightT = exp(-dl * 1.1);
+
+        vec3 ambient = mix(vec3(0.55,0.6,0.72), vec3(0.06,0.07,0.12), 1.0 - clamp(sunDir.y*1.5+0.5,0.0,1.0));
+        vec3 sunLit = mix(vec3(1.0,0.92,0.8), vec3(0.3,0.32,0.45), clamp(-sunDir.y,0.0,1.0));
+        vec3 lit = ambient * 0.6 + sunLit * lightT * 1.4;
+
+        // extinción calibrada para el rango de dt esperado (0-110 aprox): acumula opacidad
+        // en varios pasos en vez de saturar en el primero
+        float absorb = exp(-d * dt * 0.0035);
+        cloudCol += trans * (1.0 - absorb) * lit;
+        trans *= absorb;
+      }
+      t += dt;
+    }
+
+    col = col * trans + cloudCol;
+  }
+
+  // tonemap suave + vignette
+  col = col / (1.0 + col);
+  col = pow(col, vec3(0.85));
+  float vig = smoothstep(1.3, 0.3, length(vUv - 0.5));
+  col *= mix(0.85, 1.0, vig);
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+const material = new THREE.ShaderMaterial({ uniforms, vertexShader, fragmentShader });
+const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+scene.add(quad);
+
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  uniforms.uResolution.value.set(w * renderer.getPixelRatio(), h * renderer.getPixelRatio());
+}
+window.addEventListener("resize", resize);
+resize();
+
+// ---- UI ----
+function bind(id, valId, uniform, format) {
+  const el = document.getElementById(id);
+  const label = document.getElementById(valId);
+  const update = () => {
+    const raw = parseFloat(el.value);
+    const norm = (raw - el.min) / (el.max - el.min);
+    uniform.value = uniform.__isNorm ? norm : raw;
+    label.textContent = format(raw, norm);
+  };
+  el.addEventListener("input", update);
+  update();
+}
+
+bind("sun", "v-sun", { set value(v) { uniforms.uSunHeight.value = v; } }, (raw) => {
+  const norm = (raw + 15) / 120; // -15..105 -> 0..1
+  const hourFloat = norm * 24;
+  const hh = Math.floor(hourFloat).toString().padStart(2, "0");
+  const mm = Math.floor((hourFloat % 1) * 60).toString().padStart(2, "0");
+  uniforms.uSunHeight.value = norm;
+  return `${hh}:${mm}`;
+});
+bind("cov", "v-cov", { set value(v) { uniforms.uCoverage.value = v / 100; } }, (raw) => `${raw}%`);
+bind("den", "v-den", { set value(v) { uniforms.uDensity.value = v / 100; } }, (raw) => `${raw}%`);
+bind("scale", "v-scale", { set value(v) { uniforms.uScale.value = v / 100; } }, (raw) => `${raw}%`);
+bind("wind", "v-wind", { set value(v) { uniforms.uWind.value = v / 100; } }, (raw) => `${raw}%`);
+
+// ---- loop ----
+let last = performance.now();
+let fpsEma = 60;
+const fpsEl = document.getElementById("fps");
+
+function tick(now) {
+  const dt = (now - last) / 1000;
+  last = now;
+  fpsEma += (1 / dt - fpsEma) * 0.05;
+  fpsEl.textContent = `${fpsEma.toFixed(0)} fps`;
+
+  uniforms.uTime.value = now / 1000;
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
